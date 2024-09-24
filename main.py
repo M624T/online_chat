@@ -1,102 +1,70 @@
 import asyncio
 from pywebio import start_server
-from pywebio.input import *
-from pywebio.output import *
-from pywebio.session import run_async, run_js, set_env
-from collections import deque
+from pywebio.input import input, input_group, actions
+from pywebio.output import put_markdown, put_scrollable, put_buttons, output, toast
+from pywebio.session import run_async
 
-# Doimiy qiymat
+chat_msgs = []
+online_users = set()
 MAX_MESSAGES_COUNT = 100
 
-# Global holat
-chat_msgs = deque(maxlen=MAX_MESSAGES_COUNT)
-online_users = set()
+async def display_welcome(msg_box):
+    put_markdown("## 🧊 Xush kelibsiz onlayn chatga!\nUshbu chatning kod manzili 100 qator kodni tashkil etadi!")
+    msg_box.append(put_markdown("Bu yerda siz boshqa foydalanuvchilar bilan muloqot qilishingiz mumkin."))
+
+async def handle_user_input(nickname, msg_box):
+    while True:
+        data = await input_group("💭 Yangi xabar", [
+            input(placeholder="Xabar matni ...", name="msg"),
+            actions(name="cmd", buttons=["Yuborish", {'label': "Chatdan chiqish", 'type': 'cancel'}])
+        ], validate=lambda m: ('msg', "Iltimos, xabar matnini kiriting!") if m["cmd"] == "Yuborish" and not m['msg'] else None)
+
+        if data is None:  # Foydalanuvchi chiqish tanladi
+            break
+
+        msg_box.append(put_markdown(f"`{nickname}`: {data['msg']}"))
+        chat_msgs.append((nickname, data['msg']))
+
+async def refresh_messages(nickname, msg_box):
+    global chat_msgs
+    last_idx = len(chat_msgs)
+
+    while True:
+        await asyncio.sleep(1)
+        
+        for m in chat_msgs[last_idx:]:
+            if m[0] != nickname:  # Agar xabar joriy foydalanuvchidan kelmasa
+                msg_box.append(put_markdown(f"`{m[0]}`: {m[1]}"))
+
+        if len(chat_msgs) > MAX_MESSAGES_COUNT:
+            chat_msgs[:] = chat_msgs[len(chat_msgs) // 2:]
+
+        last_idx = len(chat_msgs)
 
 async def main():
     global chat_msgs
 
-    # PyWebIO muhitini sozlash (avtomatik qayta ulanish funksiyasini o'chirish)
-    set_env(title="Chat Ilovasi", auto_scroll_bottom=True, output_max_length=100)
-    
-    # Xush kelibsiz xabari
-    put_markdown("## 🧊 Onlayn chatga xush kelibsiz!\nUshbu chat 100 ta kod satrida amalga oshirilgan!")
     msg_box = output()
     put_scrollable(msg_box, height=300, keep_bottom=True)
+    
+    await display_welcome(msg_box)
 
-    # Foydalanuvchi allaqachon kirganmi, tekshirish (sessiya boshqaruvi)
-    nickname = session_info.user_agent.split()[0] if session_info.user_agent else None
-    if nickname and nickname not in online_users:
-        online_users.add(nickname)
-        add_chat_message('📢', f'`{nickname}` chatga qayta qo\'shildi!')
-        msg_box.append(put_markdown(f'📢 `{nickname}` chatga qayta qo\'shildi!'))
-    else:
-        # Foydalanuvchi kiritilishi va ismi unikal bo'lishi kerakligini tekshirish
-        nickname = await input("Chatga kiring", required=True, placeholder="Ismingiz",
-                               validate=validate_nickname)
-        online_users.add(nickname)
-        run_js(f'window.sessionStorage.setItem("nickname", "{nickname}")')  # Ismni sessiyada saqlash
+    nickname = await input("Chatga kirish", required=True, placeholder="Ismingiz",
+                           validate=lambda n: "Bu nick allaqachon ishlatilmoqda!" if n in online_users or n == '📢' else None)
+    online_users.add(nickname)
 
-        # Boshqalarga foydalanuvchi qo'shilgani haqida xabar berish
-        add_chat_message('📢', f'`{nickname}` chatga qo\'shildi!')
-        msg_box.append(put_markdown(f'📢 `{nickname}` chatga qo\'shildi!'))
+    chat_msgs.append(('📢', f'`{nickname}` chatga qo\'shildi!'))
+    msg_box.append(put_markdown(f'📢 `{nickname}` chatga qo\'shildi'))
 
-    # Xabar qutisini fon rejimida yangilab turish
     refresh_task = run_async(refresh_messages(nickname, msg_box))
+    await handle_user_input(nickname, msg_box)
 
-    while True:
-        # Foydalanuvchi yangi xabar yozishi uchun kiritish maydoni
-        data = await input_group("💬 Yangi xabar", [
-            input(placeholder="Xabar...", name="msg"),
-            actions(name="cmd", buttons=["Yuborish", {'label': "Chatni tark etish", 'type': 'cancel'}])
-        ], validate=validate_message)
-
-        if data is None:
-            break
-
-        # Xabarni chatga qo'shish
-        add_chat_message(nickname, data['msg'])
-        msg_box.append(put_markdown(f"`{nickname}`: {data['msg']}"))
-
-    # Foydalanuvchi chiqib ketganda fon vazifasini to'xtatish va tozalash
     refresh_task.close()
-
     online_users.remove(nickname)
     toast("Siz chatdan chiqdingiz!")
-    add_chat_message('📢', f'`{nickname}` chatni tark etdi!')
-    msg_box.append(put_markdown(f'📢 `{nickname}` chatni tark etdi!'))
+    msg_box.append(put_markdown(f'📢 Foydalanuvchi `{nickname}` chatdan chiqdi!'))
 
-    # Chatga qayta kirish imkoniyati
-    put_buttons(['Qayta kirish'], onclick=lambda btn: run_js('window.location.reload()'))
-
-
-async def refresh_messages(nickname, msg_box):
-    last_idx = len(chat_msgs)
-    
-    while True:
-        await asyncio.sleep(1)
-
-        # Boshqa foydalanuvchilarning yangi xabarlarini ko'rsatish
-        for m in list(chat_msgs)[last_idx:]:
-            if m[0] != nickname:
-                msg_box.append(put_markdown(f"`{m[0]}`: {m[1]}`"))
-        
-        last_idx = len(chat_msgs)
-
-def add_chat_message(sender, message):
-    """ Global chat ro'yxatiga xabar qo'shish """
-    chat_msgs.append((sender, message))
-
-def validate_nickname(nickname):
-    """ Foydalanuvchi ismi unikal va rezerv qilinmaganligini tekshirish """
-    if nickname in online_users or nickname == '📢':
-        return "Bu ism allaqachon ishlatilgan!"
-    return None
-
-def validate_message(data):
-    """ Xabar bo'sh emasligini tekshirish """
-    if data["cmd"] == "Yuborish" and not data['msg']:
-        return ('msg', "Xabarni kiriting!")
-    return None
+    put_buttons(['Qaytadan kirish'], onclick=lambda btn: run_js('window.location.reload()'))
 
 if __name__ == "__main__":
     start_server(main, debug=True, port=8080, cdn=False)
